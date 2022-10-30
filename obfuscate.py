@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 import random
+import subprocess
 import networkx as nx
 
 import matplotlib.pyplot as plt
@@ -15,21 +16,38 @@ from pyverilog.ast_code_generator.codegen import ASTCodeGenerator
 from pyverilog.utils.signaltype import isInput
 
 
-# def get_io_signals(ast, top_module_name):
-#     '''Get the IO port signals information
+def preprocess_file(netlist_file, top_module):
+    # Remove all 'GND', and 'VDD' wires
+    subprocess.call(["sed", "-i", "s/GND,//g", netlist_file])
+    subprocess.call(["sed", "-i", "s/VDD,//g", netlist_file])
 
-#     '''
-#     module_visitor = ModuleVisitor()
-#     module_visitor.visit(ast)
-#     module_names = module_visitor.get_modulenames()
-    
-#     if (top_module_name not in module_names):
-#         raise Exception("Top module {} not found.".format(top_module_name))
+    # Add 'reset' to current netlist ports
+    subprocess.call(["sed", "-i", "s/\(.*\)module \({}\|dff\)\(.*\)(CK/\\1module \\2\\3(CK,reset/".format(top_module, top_module), netlist_file])
+    subprocess.call(["sed", "-i", "s/\(.*\)dff DFF_\(.*\)(CK/\\1dff DFF_\\2(CK,reset/", netlist_file])
 
-#     module_infotable = module_visitor.get_moduleinfotable()
-#     io_signal_dict = dict(module_infotable.getSignals(top_module_name))
     
-#     return io_signal_dict
+
+
+def get_io_signals(ast, top_module_name):
+    '''Get the IO port signals information
+
+    '''
+    module_visitor = ModuleVisitor()
+    module_visitor.visit(ast)
+    module_names = module_visitor.get_modulenames()
+    
+    if (top_module_name not in module_names):
+        raise Exception("Top module {} not found.".format(top_module_name))
+
+    module_infotable = module_visitor.get_moduleinfotable()
+
+    # io_signal_dict = dict(module_infotable.getIOPorts(top_module_name))
+    io_signal_dict = dict(module_infotable.getDefinitions())
+
+    
+    print(io_signal_dict[top_module_name].getIOPorts())
+    
+    return io_signal_dict
 
 
 def construct_obfuscation_graph(key_length, ip_width):
@@ -38,17 +56,20 @@ def construct_obfuscation_graph(key_length, ip_width):
     key = dict()
     wrong_transitions = dict()
     additional_non_key_nodes = []
+
+    node_color = []
     
     # Construct the obfuscation FSM
     with open("key.txt", "w") as f:
         for i in range(key_length):
             key_item = random.randint(1, ip_width)
             Graph.add_edge(i, i+1, object=key_item)
+            node_color.append("#4CD4EF")
             key[(i, i+1)] = key_item
             f.write(str(key_item)+"\n")
 
     # Yay! authenticated successfully. Stay in the same state!
-    Graph.add_edge(i+1, i+1, object=key_item)
+    Graph.add_edge(i+1, i+1, object='default')
     key[(i+1, i+1)] = 'default'
     
     first_state = 0
@@ -62,9 +83,11 @@ def construct_obfuscation_graph(key_length, ip_width):
     Graph.add_edge(last_state, node_idx, object='default')
     wrong_transitions[(last_state, node_idx)] = 'default'
     additional_non_key_nodes.append(node_idx)
-    
+    node_color.append("#EE8787")
+
     for i in range(random.randint(int(key_length/2), key_length)):
         Graph.add_edge(node_idx, node_idx+1, object='default')
+        node_color.append("#EE8787")
         wrong_transitions[(node_idx, node_idx+1)] = 'default'
         node_idx += 1
         additional_non_key_nodes.append(node_idx)
@@ -72,6 +95,7 @@ def construct_obfuscation_graph(key_length, ip_width):
     # Final transition back to node 0
     Graph.add_edge(node_idx, 0, object='default')
     wrong_transitions[(node_idx, 0)] = 'default'
+    node_color.append("#EE8787")
 
 
     # Random edges from each node back to
@@ -83,7 +107,6 @@ def construct_obfuscation_graph(key_length, ip_width):
         wrong_transitions[(i, randomly_picked_node)] = 'default'
 
 
-    
     pos = nx.circular_layout(Graph)    
     nx.draw(Graph, pos, with_labels=True)
 
@@ -95,11 +118,15 @@ def construct_obfuscation_graph(key_length, ip_width):
         edge_labels[k] = wrong_transitions[k]
 
     print(len(pos))
+    print(len(node_color))
     print(len(edge_labels))
-
+    
     print(key)
     print(wrong_transitions)
+
+    node_color[key_length] = "#4CEF57"
     
+    nx.draw(Graph, pos, node_color = node_color)
     nx.draw_networkx_edge_labels(Graph, pos, edge_labels = edge_labels)
     plt.savefig("obfuscation-fsm.png")            
     
@@ -125,9 +152,6 @@ def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, inver
                 ])
 
         toret += "\n".join([
-            # "               default: begin",
-            # "                  next_state = 0;",
-            # "               end",
             "             endcase",
             "          end\n",
             ])
@@ -189,11 +213,14 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, invert_ve
     
 
 def main(args):
-    # # Parse and get the AST of the netlist
+    # Pre-process file
+    # preprocess_file(str(args.netlist_file), args.top_module)
+    
+    # Parse and get the AST of the netlist
     # ast, directives = vparser([str(args.netlist_file)])
-
-    # # Get the IO ports of the netlist
-    # io_signals_dict = [i for i in get_io_signals(ast, args.top_module)]
+    
+    # Get the IO ports of the netlist
+    # io_signals_dict = get_io_signals(ast, args.top_module)
 
     # Construct obfuscation FSM
     obfuscation_graph   = construct_obfuscation_graph(args.key_length, 5)
