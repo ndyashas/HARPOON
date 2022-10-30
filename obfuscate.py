@@ -36,21 +36,73 @@ def construct_obfuscation_graph(key_length, ip_width):
 
     Graph = nx.DiGraph()
     key = dict()
-    pos = dict()
+    wrong_transitions = dict()
+    additional_non_key_nodes = []
+    
+    # Construct the obfuscation FSM
+    with open("key.txt", "w") as f:
+        for i in range(key_length):
+            key_item = random.randint(1, ip_width)
+            Graph.add_edge(i, i+1, object=key_item)
+            key[(i, i+1)] = key_item
+            f.write(str(key_item)+"\n")
 
-    # Form edges with a random value as a key item at
-    # every edge.
-    for i in range(key_length):
-        key_item = random.randint(1, ip_width)
-        Graph.add_edge(i, i+1, object=key_item)
-        key[(i, i+1)] = key_item
+    # Yay! authenticated successfully. Stay in the same state!
+    Graph.add_edge(i+1, i+1, object=key_item)
+    key[(i+1, i+1)] = 'default'
+    
+    first_state = 0
+    # The actual last state is 'valid' initialization state
+    # Thus, we must loop only in the states before that.
+    last_state  = key_length - 1
+
+    # Add some additional FSM states to make the
+    # adversary stay in the obfuscated FSM
+    node_idx = key_length + 1
+    Graph.add_edge(last_state, node_idx, object='default')
+    wrong_transitions[(last_state, node_idx)] = 'default'
+    additional_non_key_nodes.append(node_idx)
+    
+    for i in range(random.randint(int(key_length/2), key_length)):
+        Graph.add_edge(node_idx, node_idx+1, object='default')
+        wrong_transitions[(node_idx, node_idx+1)] = 'default'
+        node_idx += 1
+        additional_non_key_nodes.append(node_idx)
+
+    # Final transition back to node 0
+    Graph.add_edge(node_idx, 0, object='default')
+    wrong_transitions[(node_idx, 0)] = 'default'
 
 
+    # Random edges from each node back to
+    # No need for a random transition for last obfuscated state
+    # node.
+    for i in range(key_length-1):
+        randomly_picked_node = random.choice(additional_non_key_nodes)
+        Graph.add_edge(i, randomly_picked_node, object = 'default')
+        wrong_transitions[(i, randomly_picked_node)] = 'default'
+
+
+    
     pos = nx.circular_layout(Graph)    
     nx.draw(Graph, pos, with_labels=True)
-    nx.draw_networkx_edge_labels(Graph, pos, edge_labels = key)
-    plt.savefig("obfuscation-fsm.png")
 
+    edge_labels = dict()
+    for k in key:
+        edge_labels[k] = key[k]
+
+    for k in wrong_transitions:
+        edge_labels[k] = wrong_transitions[k]
+
+    print(len(pos))
+    print(len(edge_labels))
+
+    print(key)
+    print(wrong_transitions)
+    
+    nx.draw_networkx_edge_labels(Graph, pos, edge_labels = edge_labels)
+    plt.savefig("obfuscation-fsm.png")            
+    
     return Graph
 
 
@@ -73,9 +125,9 @@ def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, inver
                 ])
 
         toret += "\n".join([
-            "               default: begin",
-            "                  next_state = 0;",
-            "               end",
+            # "               default: begin",
+            # "                  next_state = 0;",
+            # "               end",
             "             endcase",
             "          end\n",
             ])

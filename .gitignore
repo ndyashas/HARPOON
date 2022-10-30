@@ -1,3 +1,4 @@
 ref/
 *.png
+key.txt
 obfuscation_fsm.v
