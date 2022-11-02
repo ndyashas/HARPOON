@@ -5,6 +5,8 @@ import os
 import random
 import networkx as nx
 
+import circuitgraph as cg
+
 import matplotlib.pyplot as plt
 
 from pyverilog.vparser.parser import parse as vparser 
@@ -16,16 +18,13 @@ from pyverilog.ast_code_generator.codegen import ASTCodeGenerator
 from pyverilog.utils.signaltype import isInput
 
 
-def preprocess_file(netlist_file, top_module):
-    # Remove all 'GND', and 'VDD' wires
-    os.system("sed 's/GND,//g' " + netlist_file + " > tmp.v")
-    os.system("sed 's/VDD,//g' tmp.v > modified.v && rm tmp.v")
+def preprocess_file(netlist_file, top_module):    
 
-    
+    os.system("cp {} tmp.v".format(netlist_file))
 
     # Comment out the 'dff' module
     verilog_lines = []
-    with open("modified.v", "r") as orig:
+    with open("tmp.v", "r") as orig:
         orig_verilog_lines = orig.readlines()
 
     modified_verilog_lines = []
@@ -40,14 +39,60 @@ def preprocess_file(netlist_file, top_module):
             
         modified_verilog_lines.append(line)
             
-    with open("modified.v", "w") as modified:
+    with open("tmp.v", "w") as modified:
         modified.writelines(modified_verilog_lines)
         modified.write("\n\nmodule dff(CK,Q,D);\n")
         modified.write("input CK, D;\n")
         modified.write("output Q;\n")
         modified.write("endmodule\n")
-    
 
+    os.system("./preprocess.sh {} > modified.v".format("tmp.v"))
+
+        
+    # circuit graph
+    dff_bb = cg.BlackBox("dff", ["CK", "D"], ["Q"])    
+    ck = cg.from_file("modified.v", blackboxes = [dff_bb])
+
+    primitive_gates = [
+        "and",
+        "or",
+        "xor",
+        "not",
+        "nand",
+        "nor",
+        "xnor",
+    ]
+
+    original_inputs = ck.filter_type("input")
+    original_internal_nodes = ck.filter_type(primitive_gates)
+    number_of_nodes = len(original_internal_nodes)
+
+    nums_to_pick = 5
+    randomly_sampled_nodes = random.sample(list(original_internal_nodes), 5)
+    
+    for node in randomly_sampled_nodes:
+        print(node, ck.type(node))
+
+        ck.add(node + "_flipper", "input")
+        
+        # Construct a duplicate of the current node
+        ck.add(node + "_orig", ck.type(node), fanin=ck.fanin(node))
+
+        # Disconnect all parents feeding into this
+        ck.disconnect(ck.fanin(node), node)
+
+        # Add an 'XOR' gate
+        ck.add(node + "_flipped", "xor", fanin={node + "_orig", node + "_flipper"}, fanout = node)
+
+    cg.to_file(ck, "op.v")
+
+    cg.visualize(ck, "ck.png")
+    
+    return randomly_sampled_nodes, original_inputs
+
+
+
+    
 def get_io_signals(ast, top_module_name):
     '''Get the IO port signals information
 
@@ -59,16 +104,19 @@ def get_io_signals(ast, top_module_name):
     if (top_module_name not in module_names):
         raise Exception("Top module {} not found.".format(top_module_name))
 
+    
     module_infotable = module_visitor.get_moduleinfotable()
 
     # io_signal_dict = dict(module_infotable.getIOPorts(top_module_name))
     io_signal_dict = dict(module_infotable.getDefinitions())
+    variables = module_infotable.getVariables()
 
-    
     print(io_signal_dict[top_module_name].getIOPorts())
     
     return io_signal_dict
 
+    
+    
 
 def construct_obfuscation_graph(key_length, ip_width):
 
@@ -137,12 +185,12 @@ def construct_obfuscation_graph(key_length, ip_width):
     for k in wrong_transitions:
         edge_labels[k] = wrong_transitions[k]
 
-    print(len(pos))
-    print(len(node_color))
-    print(len(edge_labels))
+    # print(len(pos))
+    # print(len(node_color))
+    # print(len(edge_labels))
     
-    print(key)
-    print(wrong_transitions)
+    # print(key)
+    # print(wrong_transitions)
 
     node_color[key_length] = "#4CEF57"
     
@@ -156,7 +204,7 @@ def construct_obfuscation_graph(key_length, ip_width):
 def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, invert_vec_length):
     toret  = ""
     adjacency = dict(obfuscation_graph.adjacency())
-    print(adjacency)
+    # print(adjacency)
     
     for node_idx in adjacency:
         toret += "\n".join([
@@ -239,23 +287,42 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, invert_ve
     
     return module
     
+# TODO put outputs too
+def merge(top_module, randomly_sampled_nodes, original_inputs):
+    # generates the final merged obfuscatged design
+    module_header = "module top_module (" + ",".join(list(original_inputs)) + ");"
 
+    # TODO
+    module_body   = "   top_module top_module_modified(" + "\n".join(list(original_inputs)) + ");"
+    
+    module_footer = "endmodule\n"
+
+    module = module_header + module_body + module_footer
+
+    with open("top_module.v", "w") as f:
+        f.write(module)
+    
+    return module
+
+    
     
 
 def main(args):
     # Pre-process file
-    preprocess_file(str(args.netlist_file), args.top_module)
-    
-    # Parse and get the AST of the netlist
+    randomly_sampled_nodes, original_inputs = preprocess_file(str(args.netlist_file), args.top_module)
+
+    # # Parse and get the AST of the netlist
     # ast, directives = vparser([str(args.netlist_file)])
     
-    # Get the IO ports of the netlist
+    # # Get the IO ports of the netlist
     # io_signals_dict = get_io_signals(ast, args.top_module)
 
     # Construct obfuscation FSM
-    obfuscation_graph   = construct_obfuscation_graph(args.key_length, 5)
-    obfuscation_fsm_str = construct_obfuscation_fsm(obfuscation_graph, args.key_length, 5, args.invert_vec_length)
+    obfuscation_graph   = construct_obfuscation_graph(args.key_length, len(original_inputs))
+    obfuscation_fsm_str = construct_obfuscation_fsm(obfuscation_graph, args.key_length, len(original_inputs), len(randomly_sampled_nodes))
 
+    merge(args.top_module, randomly_sampled_nodes, original_inputs)
+    
 
 if (__name__ == "__main__"):
     
