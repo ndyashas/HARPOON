@@ -1,8 +1,8 @@
 import argparse
 from pathlib import Path
 
+import os
 import random
-import subprocess
 import networkx as nx
 
 import matplotlib.pyplot as plt
@@ -18,15 +18,35 @@ from pyverilog.utils.signaltype import isInput
 
 def preprocess_file(netlist_file, top_module):
     # Remove all 'GND', and 'VDD' wires
-    subprocess.call(["sed", "-i", "s/GND,//g", netlist_file])
-    subprocess.call(["sed", "-i", "s/VDD,//g", netlist_file])
-
-    # Add 'reset' to current netlist ports
-    subprocess.call(["sed", "-i", "s/\(.*\)module \({}\|dff\)\(.*\)(CK/\\1module \\2\\3(CK,reset/".format(top_module, top_module), netlist_file])
-    subprocess.call(["sed", "-i", "s/\(.*\)dff DFF_\(.*\)(CK/\\1dff DFF_\\2(CK,reset/", netlist_file])
+    os.system("sed 's/GND,//g' " + netlist_file + " > tmp.v")
+    os.system("sed 's/VDD,//g' tmp.v > modified.v && rm tmp.v")
 
     
 
+    # Comment out the 'dff' module
+    verilog_lines = []
+    with open("modified.v", "r") as orig:
+        orig_verilog_lines = orig.readlines()
+
+    modified_verilog_lines = []
+    flag = False
+    for line in orig_verilog_lines:
+        if ((flag) or (("module" in line) and ("dff" in line))):
+            flag = True
+            line = "// " + line
+
+        if ("endmodule" in line):
+            flag = False
+            
+        modified_verilog_lines.append(line)
+            
+    with open("modified.v", "w") as modified:
+        modified.writelines(modified_verilog_lines)
+        modified.write("\n\nmodule dff(CK,Q,D);\n")
+        modified.write("input CK, D;\n")
+        modified.write("output Q;\n")
+        modified.write("endmodule\n")
+    
 
 def get_io_signals(ast, top_module_name):
     '''Get the IO port signals information
@@ -145,9 +165,17 @@ def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, inver
             ])
 
         for dest in adjacency[node_idx]:
+            op_vec_val = random.randint(2**(invert_vec_length-1), 2**invert_vec_length-1)
+            reset_orig_fsm = 0;
+            if (dest == node_idx):
+                op_vec_val = 0;
+                reset_orig_fsm = 1;
+
             toret += "\n".join([
                 "               {}: begin".format(adjacency[node_idx][dest]['object']),
-                "                  next_state = {};".format(dest),
+                "                  next_state <= {};".format(dest),
+                "                  reset_orig_fsm <= {};".format(reset_orig_fsm),
+                "                  op_vec <= {};".format(op_vec_val),
                 "               end\n",
                 ])
 
@@ -165,7 +193,7 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, invert_ve
                                "            input wire          clk,",
                                "            input wire          reset,",
                                "            input wire [{}-1:0]  ip_vec,".format(ip_width),
-                               "            output wire [{}-1:0] op_vec,".format(invert_vec_length),
+                               "            output reg  [{}-1:0] op_vec,".format(invert_vec_length),
                                "            output reg          reset_orig_fsm",
                                "            );",
                                "",
@@ -180,6 +208,8 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, invert_ve
                              "       if (reset)",
                              "         begin",
                              "           state <= 0;",
+                             "           reset_orig_fsm <= 0;",
+                             "           op_vec <= {};".format(random.randint(2**(invert_vec_length-1), 2**invert_vec_length-1)),
                              "         end",
                              "       else",
                              "         begin",
@@ -214,7 +244,7 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, invert_ve
 
 def main(args):
     # Pre-process file
-    # preprocess_file(str(args.netlist_file), args.top_module)
+    preprocess_file(str(args.netlist_file), args.top_module)
     
     # Parse and get the AST of the netlist
     # ast, directives = vparser([str(args.netlist_file)])
@@ -250,7 +280,6 @@ if (__name__ == "__main__"):
                         default = 5,
                         type = int,
                         help = "Length of inverting vector.")
-
     
     args = parser.parse_args()
 
