@@ -41,16 +41,16 @@ def preprocess_file(netlist_file, top_module):
             
     with open("tmp.v", "w") as modified:
         modified.writelines(modified_verilog_lines)
-        modified.write("\n\nmodule dff(CK,Q,D);\n")
-        modified.write("input CK, D;\n")
-        modified.write("output Q;\n")
-        modified.write("endmodule\n")
+        # modified.write("\n\nmodule dff(CK,Q,D);\n")
+        # modified.write("input CK, D;\n")
+        # modified.write("output Q;\n")
+        # modified.write("endmodule\n")
 
     os.system("./preprocess.sh {} > modified.v".format("tmp.v"))
 
         
     # circuit graph
-    dff_bb = cg.BlackBox("dff", ["CK", "D"], ["Q"])    
+    dff_bb = cg.BlackBox("dff", ["reset", "CK", "D"], ["Q"])    
     ck = cg.from_file("modified.v", blackboxes = [dff_bb])
 
     primitive_gates = [
@@ -64,6 +64,7 @@ def preprocess_file(netlist_file, top_module):
     ]
 
     original_inputs = ck.filter_type("input")
+    original_outputs = ck.outputs()
     original_internal_nodes = ck.filter_type(primitive_gates)
     number_of_nodes = len(original_internal_nodes)
 
@@ -84,11 +85,13 @@ def preprocess_file(netlist_file, top_module):
         # Add an 'XOR' gate
         ck.add(node + "_flipped", "xor", fanin={node + "_orig", node + "_flipper"}, fanout = node)
 
+    ck.add("reset", node_type="input", fanout = ["DFF_RESET"])
+
     cg.to_file(ck, "op.v")
 
     cg.visualize(ck, "ck.png")
     
-    return randomly_sampled_nodes, original_inputs
+    return randomly_sampled_nodes, original_inputs, original_outputs
 
 
 
@@ -208,8 +211,8 @@ def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, inver
     
     for node_idx in adjacency:
         toret += "\n".join([
-            "          {}: begin".format(node_idx),
-            "             case (ip_vec)\n",
+            "             {}: begin".format(node_idx),
+            "                case (ip_vec)\n",
             ])
 
         for dest in adjacency[node_idx]:
@@ -219,17 +222,34 @@ def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, inver
                 op_vec_val = 0;
                 reset_orig_fsm = 1;
 
-            toret += "\n".join([
-                "               {}: begin".format(adjacency[node_idx][dest]['object']),
-                "                  next_state <= {};".format(dest),
-                "                  reset_orig_fsm <= {};".format(reset_orig_fsm),
-                "                  op_vec <= {};".format(op_vec_val),
-                "               end\n",
+                toret += "\n".join([
+                    "                  {}: begin".format(adjacency[node_idx][dest]['object']),
+                    "                     state <= {};".format(dest),
+                    "                     if (!reset_flag)",
+                    "                       begin",
+                    "                          reset_orig_fsm <= 1;",
+                    "                          reset_flag <= 1;",
+                    "                       end",
+                    "                     else",
+                    "                       begin",
+                    "                          reset_orig_fsm <= 0;",
+                    "                       end",
+                    "                     op_vec <= {};".format(op_vec_val),
+                    "                  end\n",
+                ])
+
+            else:
+                toret += "\n".join([
+                    "                  {}: begin".format(adjacency[node_idx][dest]['object']),
+                    "                     state <= {};".format(dest),
+                    "                     reset_orig_fsm <= 0;",
+                    "                     op_vec <= {};".format(op_vec_val),
+                    "                  end\n",
                 ])
 
         toret += "\n".join([
-            "             endcase",
-            "          end\n",
+            "                endcase",
+            "             end\n",
             ])
         
     return toret
@@ -245,35 +265,31 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, invert_ve
                                "            output reg          reset_orig_fsm",
                                "            );",
                                "",
-                               "   reg [{}-1:0]                    state, next_state;".format((key_length-1).bit_length()),
+                               "   reg [{}-1:0]                    state;".format((key_length-1).bit_length()),
+                               "   reg                             reset_flag;",
                                "",
                                "",
                                ])
 
 
-    module_body = "\n".join(["   always @(posedge clk)\n",
+    module_body = "\n".join(["   always @(posedge clk)",
                              "     begin",
                              "       if (reset)",
                              "         begin",
                              "           state <= 0;",
                              "           reset_orig_fsm <= 0;",
+                             "           reset_flag <= 0;",
                              "           op_vec <= {};".format(random.randint(2**(invert_vec_length-1), 2**invert_vec_length-1)),
                              "         end",
                              "       else",
                              "         begin",
-                             "           state <= next_state;",
-                             "         end",
-                             "     end",
-                             "",
-                             "",
-                             "   always @(posedge clk)",
-                             "     begin",
-                             "       case(state)",
+                             "           case(state)",
 
                              _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, invert_vec_length),
 
-                             "       endcase",
-                             "     end",
+                             "           endcase",
+                             "         end",
+                             "     end"
                              "",
                              "\n"
                             ])
@@ -288,17 +304,51 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, invert_ve
     return module
     
 # TODO put outputs too
-def merge(top_module, randomly_sampled_nodes, original_inputs):
+def merge(top_module, randomly_sampled_nodes, original_inputs, original_outputs):
     # generates the final merged obfuscatged design
-    module_header = "module top_module (" + ",".join(list(original_inputs)) + ");"
+    # print(top_module)
+    # print(randomly_sampled_nodes)
+    # print(original_inputs)
+    
+    module_header  = "module top_module (\n           "
+    module_header += ",\n           ".join(original_inputs) + ",\n           "
+    module_header += ",\n           ".join(original_outputs) + ",\n           "
+    module_header += "reset);\n\n"
 
-    # TODO
-    module_body   = "   top_module top_module_modified(" + "\n".join(list(original_inputs)) + ");"
+
+    module_body     = "   " + ";\n   ".join(["input {}".format(original_input) for original_input in original_inputs]) + ";\n"
+    module_body    += "   input reset;\n"
+    module_body    += "   " + ";\n   ".join(["output {}".format(original_output) for original_output in original_outputs]) + ";\n"
+    module_body    += "   " + ";\n   ".join(["wire reset_orig_fsm", "wire [{}-1:0] op_vec".format(len(randomly_sampled_nodes))]) + ";\n"
+    
+    
+    module_body    += "\n".join([
+        "",
+        "",
+        "   obfuscation_fsm obfuscation_fsm_inst(",
+        "                                        .clk(CK),",
+        "                                        .reset(reset),",
+        "                                        .ip_vec({" + ",".join([ip for ip in sorted(original_inputs) if ip != "CK"]) + "}),",
+        "                                        .op_vec(op_vec),",
+        "                                        .reset_orig_fsm(reset_orig_fsm));",
+        "",
+        "",
+        "   {0} {0}_inst (".format(top_module),
+        "         " + ",\n         ".join([".{0}({0})".format(original_input) for original_input in sorted(original_inputs)]) + ",",
+        "         .reset(reset_orig_fsm),",
+        "         " + ",\n         ".join([".{}_flipper(op_vec[{}])".format(sample_node, i) for i,sample_node in enumerate(randomly_sampled_nodes)]) + ",",
+
+        "         " + ",\n         ".join([".{0}({0})".format(original_output) for original_output in original_outputs]) + ");",
+        "",
+        "",
+    ])
     
     module_footer = "endmodule\n"
 
     module = module_header + module_body + module_footer
 
+    
+    
     with open("top_module.v", "w") as f:
         f.write(module)
     
@@ -309,7 +359,7 @@ def merge(top_module, randomly_sampled_nodes, original_inputs):
 
 def main(args):
     # Pre-process file
-    randomly_sampled_nodes, original_inputs = preprocess_file(str(args.netlist_file), args.top_module)
+    randomly_sampled_nodes, original_inputs, original_outputs = preprocess_file(str(args.netlist_file), args.top_module)
 
     # # Parse and get the AST of the netlist
     # ast, directives = vparser([str(args.netlist_file)])
@@ -318,10 +368,10 @@ def main(args):
     # io_signals_dict = get_io_signals(ast, args.top_module)
 
     # Construct obfuscation FSM
-    obfuscation_graph   = construct_obfuscation_graph(args.key_length, len(original_inputs))
-    obfuscation_fsm_str = construct_obfuscation_fsm(obfuscation_graph, args.key_length, len(original_inputs), len(randomly_sampled_nodes))
+    obfuscation_graph   = construct_obfuscation_graph(args.key_length, len(original_inputs)-1)
+    obfuscation_fsm_str = construct_obfuscation_fsm(obfuscation_graph, args.key_length, len(original_inputs)-1, len(randomly_sampled_nodes))
 
-    merge(args.top_module, randomly_sampled_nodes, original_inputs)
+    merge(args.top_module, randomly_sampled_nodes, original_inputs, original_outputs)
     
 
 if (__name__ == "__main__"):
