@@ -20,11 +20,11 @@ from pyverilog.utils.signaltype import isInput
 
 def preprocess_file(netlist_file, top_module):    
 
-    os.system("cp {} tmp.v".format(netlist_file))
+    os.system("rm -rf generated; mkdir -p generated; cp {} generated/orig_copy.v".format(netlist_file))
 
     # Comment out the 'dff' module
     verilog_lines = []
-    with open("tmp.v", "r") as orig:
+    with open("generated/orig_copy.v", "r") as orig:
         orig_verilog_lines = orig.readlines()
 
     modified_verilog_lines = []
@@ -39,19 +39,19 @@ def preprocess_file(netlist_file, top_module):
             
         modified_verilog_lines.append(line)
             
-    with open("tmp.v", "w") as modified:
+    with open("generated/orig_copy.v", "w") as modified:
         modified.writelines(modified_verilog_lines)
         # modified.write("\n\nmodule dff(CK,Q,D);\n")
         # modified.write("input CK, D;\n")
         # modified.write("output Q;\n")
         # modified.write("endmodule\n")
 
-    os.system("./preprocess.sh {} > modified.v".format("tmp.v"))
+    os.system("./utils/preprocess.sh generated/orig_copy.v > generated/orig_replace_ffx.v")
 
         
     # circuit graph
     dff_bb = cg.BlackBox("dff", ["reset", "CK", "D"], ["Q"])    
-    ck = cg.from_file("modified.v", blackboxes = [dff_bb])
+    ck = cg.from_file("generated/orig_replace_ffx.v", blackboxes = [dff_bb])
 
     primitive_gates = [
         "and",
@@ -87,9 +87,7 @@ def preprocess_file(netlist_file, top_module):
 
     ck.add("reset", node_type="input", fanout = ["DFF_RESET"])
 
-    cg.to_file(ck, "op.v")
-
-    cg.visualize(ck, "ck.png")
+    cg.to_file(ck, "generated/orig_ffx_2_dffsr.v")
     
     return randomly_sampled_nodes, original_inputs, original_outputs
 
@@ -110,7 +108,6 @@ def get_io_signals(ast, top_module_name):
     
     module_infotable = module_visitor.get_moduleinfotable()
 
-    # io_signal_dict = dict(module_infotable.getIOPorts(top_module_name))
     io_signal_dict = dict(module_infotable.getDefinitions())
     variables = module_infotable.getVariables()
 
@@ -131,7 +128,7 @@ def construct_obfuscation_graph(key_length, ip_width):
     node_color = []
     
     # Construct the obfuscation FSM
-    with open("key.txt", "w") as f:
+    with open("generated/key.txt", "w") as f:
         for i in range(key_length):
             key_item = random.randint(1, ip_width)
             Graph.add_edge(i, i+1, object=key_item)
@@ -188,26 +185,18 @@ def construct_obfuscation_graph(key_length, ip_width):
     for k in wrong_transitions:
         edge_labels[k] = wrong_transitions[k]
 
-    # print(len(pos))
-    # print(len(node_color))
-    # print(len(edge_labels))
-    
-    # print(key)
-    # print(wrong_transitions)
-
     node_color[key_length] = "#4CEF57"
     
     nx.draw(Graph, pos, node_color = node_color)
     nx.draw_networkx_edge_labels(Graph, pos, edge_labels = edge_labels)
-    plt.savefig("obfuscation-fsm.png")            
-    
+    plt.savefig("generated/obfuscation-fsm.png")            
+
     return Graph
 
 
 def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, invert_vec_length):
     toret  = ""
     adjacency = dict(obfuscation_graph.adjacency())
-    # print(adjacency)
     
     for node_idx in adjacency:
         toret += "\n".join([
@@ -298,18 +287,13 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, invert_ve
     module_footer = "endmodule\n"
     module = module_header + module_body + module_footer
 
-    with open("obfuscation_fsm.v", "w") as f:
+    with open("generated/obfuscation_fsm.v", "w") as f:
         f.write(module)
-    
+
     return module
     
 # TODO put outputs too
 def merge(top_module, randomly_sampled_nodes, original_inputs, original_outputs):
-    # generates the final merged obfuscatged design
-    # print(top_module)
-    # print(randomly_sampled_nodes)
-    # print(original_inputs)
-    
     module_header  = "module top_module (\n           "
     module_header += ",\n           ".join(original_inputs) + ",\n           "
     module_header += ",\n           ".join(original_outputs) + ",\n           "
@@ -349,7 +333,7 @@ def merge(top_module, randomly_sampled_nodes, original_inputs, original_outputs)
 
     
     
-    with open("top_module.v", "w") as f:
+    with open("generated/top_module.v", "w") as f:
         f.write(module)
     
     return module
@@ -360,12 +344,6 @@ def merge(top_module, randomly_sampled_nodes, original_inputs, original_outputs)
 def main(args):
     # Pre-process file
     randomly_sampled_nodes, original_inputs, original_outputs = preprocess_file(str(args.netlist_file), args.top_module)
-
-    # # Parse and get the AST of the netlist
-    # ast, directives = vparser([str(args.netlist_file)])
-    
-    # # Get the IO ports of the netlist
-    # io_signals_dict = get_io_signals(ast, args.top_module)
 
     # Construct obfuscation FSM
     obfuscation_graph   = construct_obfuscation_graph(args.key_length, len(original_inputs)-1)
