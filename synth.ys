@@ -1,0 +1,20 @@
+# Read the source files
+read_verilog top_module.v op.v obfuscation_fsm.v dff.v
+
+# The top module is always named 'top_module'
+hierarchy -top top_module
+
+proc; opt
+# Synthesize the design while flattening it
+synth -flatten; opt
+
+techmap; opt
+
+# Split all buses into single wires (circuitgraph does not support busses)
+splitnets -format _; opt
+
+# Map all flip flops to the DFFSR cell
+dfflibmap -liberty dffsr.lib; opt
+
+# Dump the final verilog
+write_verilog -noattr synth.v
