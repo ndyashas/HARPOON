@@ -339,6 +339,8 @@ def merge(top_module, randomly_sampled_nodes, original_inputs, original_outputs)
     return module
 
     
+def synthesize_design():
+    os.system("./utils/postprocess.sh")
     
 
 def main(args):
@@ -350,6 +352,8 @@ def main(args):
     obfuscation_fsm_str = construct_obfuscation_fsm(obfuscation_graph, args.key_length, len(original_inputs)-1, len(randomly_sampled_nodes))
 
     merge(args.top_module, randomly_sampled_nodes, original_inputs, original_outputs)
+
+    synthesize_design()
     
 
 if (__name__ == "__main__"):

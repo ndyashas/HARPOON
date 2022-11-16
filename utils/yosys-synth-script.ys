@@ -1,5 +1,5 @@
 # Read the source files
-read_verilog top_module.v op.v obfuscation_fsm.v dff.v
+read_verilog generated/top_module.v generated/orig_ffx_2_dffsr.v generated/obfuscation_fsm.v utils/dff.v
 
 # The top module is always named 'top_module'
 hierarchy -top top_module
@@ -14,7 +14,7 @@ techmap; opt
 splitnets -format _; opt
 
 # Map all flip flops to the DFFSR cell
-dfflibmap -liberty dffsr.lib; opt
+dfflibmap -liberty utils/dffsr.lib; opt
 
 # Dump the final verilog
-write_verilog -noattr synth.v
+write_verilog -noattr generated/yosys-synth.v
