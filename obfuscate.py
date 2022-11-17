@@ -9,14 +9,6 @@ import circuitgraph as cg
 
 import matplotlib.pyplot as plt
 
-from pyverilog.vparser.parser import parse as vparser 
-import pyverilog.vparser.ast as vast
-
-from pyverilog.dataflow.modulevisitor import ModuleVisitor
-from pyverilog.dataflow.signalvisitor import SignalVisitor
-from pyverilog.ast_code_generator.codegen import ASTCodeGenerator
-from pyverilog.utils.signaltype import isInput
-
 
 def preprocess_file(netlist_file, top_module):    
 
