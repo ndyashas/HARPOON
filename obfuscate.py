@@ -9,7 +9,6 @@ import circuitgraph as cg
 
 import matplotlib.pyplot as plt
 
-
 def preprocess_file(netlist_file, top_module):    
 
     os.system("rm -rf generated; mkdir -p generated; cp {} generated/orig_copy.v".format(netlist_file))
@@ -57,7 +56,7 @@ def preprocess_file(netlist_file, top_module):
 
     original_inputs = ck.filter_type("input")
     original_outputs = ck.outputs()
-    original_internal_nodes = ck.filter_type(primitive_gates)
+    original_internal_nodes = [node for node in ck.filter_type(primitive_gates) if not ck.is_output(node)]
     number_of_nodes = len(original_internal_nodes)
 
     nums_to_pick = 5
@@ -73,9 +72,14 @@ def preprocess_file(netlist_file, top_module):
 
         # Disconnect all parents feeding into this
         ck.disconnect(ck.fanin(node), node)
+        # ck.set_type(node, "buf")
 
         # Add an 'XOR' gate
-        ck.add(node + "_flipped", "xor", fanin={node + "_orig", node + "_flipper"}, fanout = node)
+        fanouts_of_node = ck.fanout(node)
+        ck.remove(node)
+        ck.add(node + "_flipped", "xor", fanin={node + "_orig", node + "_flipper"}, fanout = fanouts_of_node)
+
+
 
     ck.add("reset", node_type="input", fanout = ["DFF_RESET"])
 
@@ -246,7 +250,7 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, invert_ve
                                "            output reg          reset_orig_fsm",
                                "            );",
                                "",
-                               "   reg [{}-1:0]                    state;".format((key_length-1).bit_length()),
+                               "   reg [{}:0]                    state;".format((key_length-1).bit_length()),
                                "   reg                             reset_flag;",
                                "",
                                "",

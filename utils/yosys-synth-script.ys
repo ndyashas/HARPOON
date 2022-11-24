@@ -4,9 +4,10 @@ read_verilog generated/top_module.v generated/orig_ffx_2_dffsr.v generated/obfus
 # The top module is always named 'top_module'
 hierarchy -top top_module
 
-proc; opt
 # Synthesize the design while flattening it
-synth -flatten; opt
+
+synth -flatten
+opt_clean -purge
 
 techmap; opt
 
