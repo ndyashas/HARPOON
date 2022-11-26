@@ -9,7 +9,7 @@ import circuitgraph as cg
 
 import matplotlib.pyplot as plt
 
-def preprocess_file(netlist_file, top_module):    
+def preprocess_file(netlist_file, top_module, invert_vec_length):
 
     os.system("rm -rf generated; mkdir -p generated; cp {} generated/orig_copy.v".format(netlist_file))
 
@@ -59,8 +59,7 @@ def preprocess_file(netlist_file, top_module):
     original_internal_nodes = [node for node in ck.filter_type(primitive_gates) if not ck.is_output(node)]
     number_of_nodes = len(original_internal_nodes)
 
-    nums_to_pick = 5
-    randomly_sampled_nodes = random.sample(list(original_internal_nodes), 5)
+    randomly_sampled_nodes = random.sample(list(original_internal_nodes), invert_vec_length)
     
     for node in randomly_sampled_nodes:
         print(node, ck.type(node))
@@ -341,7 +340,7 @@ def synthesize_design():
 
 def main(args):
     # Pre-process file
-    randomly_sampled_nodes, original_inputs, original_outputs = preprocess_file(str(args.netlist_file), args.top_module)
+    randomly_sampled_nodes, original_inputs, original_outputs = preprocess_file(str(args.netlist_file), args.top_module, int(args.invert_vec_length))
 
     # Construct obfuscation FSM
     obfuscation_graph   = construct_obfuscation_graph(args.key_length, len(original_inputs)-1)
