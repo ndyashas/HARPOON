@@ -9,13 +9,15 @@ hierarchy -top top_module
 synth -flatten
 opt_clean -purge
 
-techmap; opt
+techmap;
 
 # Split all buses into single wires (circuitgraph does not support busses)
-splitnets -format _; opt
+splitnets -format _;
 
 # Map all flip flops to the DFFSR cell
-dfflibmap -liberty utils/dffsr.lib; opt
+dfflibmap -liberty utils/dffsr.lib;
+
+opt_clean -purge
 
 # Dump the final verilog
 write_verilog -noattr generated/yosys-synth.v
