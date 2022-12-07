@@ -1,15 +1,15 @@
-import argparse
-from pathlib import Path
-
 import os
 import random
+import argparse
 import networkx as nx
 
+from pathlib import Path
 import circuitgraph as cg
 
 import matplotlib.pyplot as plt
 
-def preprocess_file(netlist_file, top_module, invert_vec_length):
+
+def preprocess_file(netlist_file, top_module, num_nodes_to_invert):
 
     os.system("rm -rf generated; mkdir -p generated; cp {} generated/orig_copy.v".format(netlist_file))
 
@@ -59,7 +59,7 @@ def preprocess_file(netlist_file, top_module, invert_vec_length):
     original_internal_nodes = [node for node in ck.filter_type(primitive_gates) if not ck.is_output(node)]
     number_of_nodes = len(original_internal_nodes)
 
-    randomly_sampled_nodes = random.sample(list(original_internal_nodes), invert_vec_length)
+    randomly_sampled_nodes = random.sample(list(original_internal_nodes), num_nodes_to_invert)
     
     for node in randomly_sampled_nodes:
         print(node, ck.type(node))
@@ -189,7 +189,7 @@ def construct_obfuscation_graph(key_length, ip_width):
     return Graph
 
 
-def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, invert_vec_length):
+def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, num_nodes_to_invert):
     toret  = ""
     adjacency = dict(obfuscation_graph.adjacency())
     
@@ -200,7 +200,7 @@ def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, inver
             ])
 
         for dest in adjacency[node_idx]:
-            op_vec_val = random.randint(2**(invert_vec_length-1), 2**invert_vec_length-1)
+            op_vec_val = random.randint(2**(num_nodes_to_invert-1), 2**num_nodes_to_invert-1)
             reset_orig_fsm = 0;
             if (dest == node_idx):
                 op_vec_val = 0;
@@ -239,13 +239,13 @@ def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, inver
     return toret
 
 
-def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, invert_vec_length):
+def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, num_nodes_to_invert):
 
     module_header = "\n".join(["module obfuscation_fsm (",
                                "            input wire          clk,",
                                "            input wire          reset,",
                                "            input wire [{}-1:0]  ip_vec,".format(ip_width),
-                               "            output reg  [{}-1:0] op_vec,".format(invert_vec_length),
+                               "            output reg  [{}-1:0] op_vec,".format(num_nodes_to_invert),
                                "            output reg          reset_orig_fsm",
                                "            );",
                                "",
@@ -263,13 +263,13 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, invert_ve
                              "           state <= 0;",
                              "           reset_orig_fsm <= 0;",
                              "           reset_flag <= 0;",
-                             "           op_vec <= {};".format(random.randint(2**(invert_vec_length-1), 2**invert_vec_length-1)),
+                             "           op_vec <= {};".format(random.randint(2**(num_nodes_to_invert-1), 2**num_nodes_to_invert-1)),
                              "         end",
                              "       else",
                              "         begin",
                              "           case(state)",
 
-                             _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, invert_vec_length),
+                             _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, num_nodes_to_invert),
 
                              "           endcase",
                              "         end",
@@ -287,7 +287,6 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, invert_ve
 
     return module
     
-# TODO put outputs too
 def merge(top_module, randomly_sampled_nodes, original_inputs, original_outputs):
     module_header  = "module top_module (\n           "
     module_header += ",\n           ".join(original_inputs) + ",\n           "
@@ -335,46 +334,74 @@ def merge(top_module, randomly_sampled_nodes, original_inputs, original_outputs)
 
     
 def synthesize_design():
+    """
+    Call the postprocess script. This script uses Yosys, and CircuitGraph tools
+    for synthesizing the design. The Yosys tool generates verilog with expresions such as
+    "|, &, ^" etc. As the gate library is not supplied. A final parse of this file through
+    CircuitGraph allows us to map these expressions to inbuilt Verilog primitive cells such as 'or',
+    'and', and 'xor'.
+
+    This is solely because, Yosys does not support synthesizing using inbuilt Verilog primitive gates.
+    """
     os.system("./utils/postprocess.sh")
-    
+
 
 def main(args):
-    # Pre-process file
-    randomly_sampled_nodes, original_inputs, original_outputs = preprocess_file(str(args.netlist_file), args.top_module, int(args.invert_vec_length))
+    """
+    This function performs the obfuscation in three steps -
 
-    # Construct obfuscation FSM
+    1) Pre-process the input netlist.
+    2) Construct a graph of the obfuscation FSM.
+    3) Generate verilog code for the obfuscation FSM.
+    4) Merge the generated obfuscation FSM, and the preprocessed input netlist.
+    5) Synthesize the design to get the final obfuscated netlist.
+    """
+
+    # randombly_sampled_nodes: Nodes from the original circuit which were
+    #                          randomly sampled to be inverted by the inverting vector.
+    #
+    # original_inputs and original_outputs: IO port signals of the original unobfuscated design
+    #                                       required while merging designs.
+    randomly_sampled_nodes, original_inputs, original_outputs = preprocess_file(str(args.netlist_file), args.top_module, int(args.num_nodes_to_invert))
+
+    # Construct obfuscation FSM's graph. This will help in generating the Verilog code for it.
     obfuscation_graph   = construct_obfuscation_graph(args.key_length, len(original_inputs)-1)
+
+    # Pass the obfuscation graph along with other information to generate the Verilog for the obfuscation FSM.
     obfuscation_fsm_str = construct_obfuscation_fsm(obfuscation_graph, args.key_length, len(original_inputs)-1, len(randomly_sampled_nodes))
 
+    # Construct the top_level Verilog module which instantiates both the unobfuscated design as well as the obfuscation FSM,
+    # and connects both of them together. This is the final obfuscated design that needs to be synthesized.
     merge(args.top_module, randomly_sampled_nodes, original_inputs, original_outputs)
 
+    # Finally, synthesize the design to get the gate-level netlist of the obfuscated design.
     synthesize_design()
     
 
 if (__name__ == "__main__"):
     
-    parser = argparse.ArgumentParser(description = "Command line arguments for the HARPOON tool.")
+    parser = argparse.ArgumentParser(description = "Command line arguments for the HARPOON obfuscation tool.")
 
     parser.add_argument("-f", "--netlist_file",
                         required = True,
                         type = Path,
-                        help = "Input netlist file.")
+                        help = "Path of the input netlist file.")
 
     parser.add_argument("-t", "--top_module",
                         required = True,
                         type = str,
-                        help = "Top module name.")
+                        help = "Name of the top module.")
 
     parser.add_argument("-k", "--key_length",
                         default = 5,
                         type = int,
-                        help = "Length of authentication key.")
+                        help = "Length of the authentication key required.")
 
-    parser.add_argument("-i", "--invert_vec_length",
+    parser.add_argument("-i", "--num_nodes_to_invert",
                         default = 5,
                         type = int,
-                        help = "Length of inverting vector.")
-    
+                        help = "Number of nodes in the original circuit which needs to be inverted.")
+
     args = parser.parse_args()
 
     main(args)
