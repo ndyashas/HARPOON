@@ -10,10 +10,20 @@ import matplotlib.pyplot as plt
 
 
 def preprocess_file(netlist_file, top_module, num_nodes_to_invert):
+    """
+    This function does pre-processing on the input design netlist.
+
+    Preprocessing includes:
+
+    1) Removing the CMOS based DFF defnition given in the benchmark and replacing with our own library DFFSR cell.
+    2) Randomly sample some internal nodes and replace them with the XOR of thier original self and an input signal.
+           This input pin will be used for flipping the original node.
+    3) Write the new file to Verilog.
+    """
 
     os.system("rm -rf generated; mkdir -p generated; cp {} generated/orig_copy.v".format(netlist_file))
 
-    # Comment out the 'dff' module
+    # Comment out the 'dff' module, and remove them from the files
     verilog_lines = []
     with open("generated/orig_copy.v", "r") as orig:
         orig_verilog_lines = orig.readlines()
@@ -32,15 +42,12 @@ def preprocess_file(netlist_file, top_module, num_nodes_to_invert):
             
     with open("generated/orig_copy.v", "w") as modified:
         modified.writelines(modified_verilog_lines)
-        # modified.write("\n\nmodule dff(CK,Q,D);\n")
-        # modified.write("input CK, D;\n")
-        # modified.write("output Q;\n")
-        # modified.write("endmodule\n")
 
+    # Helps in adding the 'reset' port to the DFFSR
     os.system("./utils/preprocess.sh generated/orig_copy.v > generated/orig_replace_ffx.v")
 
         
-    # circuit graph
+    # Randomly sampling internal nodes and adding an XOR gate for them.
     dff_bb = cg.BlackBox("dff", ["reset", "CK", "D"], ["Q"])    
     ck = cg.from_file("generated/orig_replace_ffx.v", blackboxes = [dff_bb])
 
@@ -79,7 +86,7 @@ def preprocess_file(netlist_file, top_module, num_nodes_to_invert):
         ck.add(node + "_flipped", "xor", fanin={node + "_orig", node + "_flipper"}, fanout = fanouts_of_node)
 
 
-
+    # Connect the reset signal
     ck.add("reset", node_type="input", fanout = ["DFF_RESET"])
 
     cg.to_file(ck, "generated/orig_ffx_2_dffsr.v")
@@ -87,39 +94,23 @@ def preprocess_file(netlist_file, top_module, num_nodes_to_invert):
     return randomly_sampled_nodes, original_inputs, original_outputs
 
 
-
-    
-def get_io_signals(ast, top_module_name):
-    '''Get the IO port signals information
-
-    '''
-    module_visitor = ModuleVisitor()
-    module_visitor.visit(ast)
-    module_names = module_visitor.get_modulenames()
-    
-    if (top_module_name not in module_names):
-        raise Exception("Top module {} not found.".format(top_module_name))
-
-    
-    module_infotable = module_visitor.get_moduleinfotable()
-
-    io_signal_dict = dict(module_infotable.getDefinitions())
-    variables = module_infotable.getVariables()
-
-    print(io_signal_dict[top_module_name].getIOPorts())
-    
-    return io_signal_dict
-
-    
-    
-
 def construct_obfuscation_graph(key_length, ip_width):
+    """
+    Constructs a simple NetworkX graph. Steps taken in building the graph are as follows
+
+    1) A random key is generated based on the requested key_length.
+    2) The core graph leading to authentication is made based on the generated key.
+    3) Additonal states are added all of which finally lead the user back to circuit init state.
+    4) All node and edge information are embedded inside it.
+    """
 
     Graph = nx.DiGraph()
     key = dict()
     wrong_transitions = dict()
     additional_non_key_nodes = []
 
+    # Node color is a list maintained which will help in printing the final obfuscation FSM state
+    # transitions.
     node_color = []
     
     # Construct the obfuscation FSM
@@ -131,7 +122,6 @@ def construct_obfuscation_graph(key_length, ip_width):
             key[(i, i+1)] = key_item
             f.write(str(key_item)+"\n")
 
-    # Yay! authenticated successfully. Stay in the same state!
     Graph.add_edge(i+1, i+1, object='default')
     key[(i+1, i+1)] = 'default'
     
@@ -169,7 +159,7 @@ def construct_obfuscation_graph(key_length, ip_width):
         Graph.add_edge(i, randomly_picked_node, object = 'default')
         wrong_transitions[(i, randomly_picked_node)] = 'default'
 
-
+    # Visualize the generated obfuscation FSMs
     pos = nx.circular_layout(Graph)    
     nx.draw(Graph, pos, with_labels=True)
 
@@ -190,9 +180,16 @@ def construct_obfuscation_graph(key_length, ip_width):
 
 
 def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, num_nodes_to_invert):
+    """
+    This is a helper function to the bigger function which spits out the Verilog code by taking in
+    a NetworkX graph.
+    """
+
     toret  = ""
+    # Get the adjacency list from the obfuscation graph.
     adjacency = dict(obfuscation_graph.adjacency())
-    
+
+    # We need to generate verilog for each of the adjacent transitions shown in the diagram.
     for node_idx in adjacency:
         toret += "\n".join([
             "             {}: begin".format(node_idx),
@@ -200,12 +197,18 @@ def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, num_n
             ])
 
         for dest in adjacency[node_idx]:
+            # Generate a random number for the inverting vector which will spit out quite a
+            # an amount of light.
             op_vec_val = random.randint(2**(num_nodes_to_invert-1), 2**num_nodes_to_invert-1)
             reset_orig_fsm = 0;
             if (dest == node_idx):
+                # If there is a self loop which indicates that the current state is 'functional'
+                # then make the inverting vector as '0' and initiate resetting the functional FSM.
                 op_vec_val = 0;
                 reset_orig_fsm = 1;
 
+                # Remain in the functional state as authentication is over. Also, toggle the
+                # functional circuit reset signal and let the circuit run.
                 toret += "\n".join([
                     "                  {}: begin".format(adjacency[node_idx][dest]['object']),
                     "                     state <= {};".format(dest),
@@ -223,6 +226,8 @@ def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, num_n
                 ])
 
             else:
+                # If the state is not the functonal state, then append the content to move to the next
+                # state based on what the obfuscation FSM graph specifies.
                 toret += "\n".join([
                     "                  {}: begin".format(adjacency[node_idx][dest]['object']),
                     "                     state <= {};".format(dest),
@@ -235,17 +240,24 @@ def _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, num_n
             "                endcase",
             "             end\n",
             ])
-        
+
+    # Just return the string, as it will be appended to prologue, and epilogue of the obfuscation FSM
+    # before writing it to a verilog file.
     return toret
 
 
 def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, num_nodes_to_invert):
-
+    """
+    This function generates the verilog file by taking the obfuscation FSM graph passed to it.
+    """
+    # Module header string. This defines the IO ports and also declares some internal variables used
+    # by the FSM such as 'state' and 'reset_flag'.
     module_header = "\n".join(["module obfuscation_fsm (",
                                "            input wire          clk,",
                                "            input wire          reset,",
                                "            input wire [{}-1:0]  ip_vec,".format(ip_width),
                                "            output reg  [{}-1:0] op_vec,".format(num_nodes_to_invert),
+                               # Reset signal going to the functional part of the circuit.
                                "            output reg          reset_orig_fsm",
                                "            );",
                                "",
@@ -256,6 +268,8 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, num_nodes
                                ])
 
 
+    # The module body. The body is expanded mostly by another helper function, but the prologue, and epilogue
+    # for the case statement implementing the FSM is as shown below.
     module_body = "\n".join(["   always @(posedge clk)",
                              "     begin",
                              "       if (reset)",
@@ -269,6 +283,7 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, num_nodes
                              "         begin",
                              "           case(state)",
 
+                             # Call to the helper function which generates the body of the case statement.
                              _get_verilog_from_transitions(obfuscation_graph, key_length, ip_width, num_nodes_to_invert),
 
                              "           endcase",
@@ -282,12 +297,23 @@ def construct_obfuscation_fsm(obfuscation_graph, key_length, ip_width, num_nodes
     module_footer = "endmodule\n"
     module = module_header + module_body + module_footer
 
+    # The generated verilog is written into a verilog file for further processing by
+    # other tools.
     with open("generated/obfuscation_fsm.v", "w") as f:
         f.write(module)
 
+    # TODO: remove this.
+    # Also return the verilog string.
     return module
     
 def merge(top_module, randomly_sampled_nodes, original_inputs, original_outputs):
+    """
+    This function generates a verilog file for the top_module which instantiates the original
+    design (slightly modified to take in inverting vector) and the obfuscation FSM, and connects
+    them together.
+
+    The top_module will have the same IO ports as the original design.
+    """
     module_header  = "module top_module (\n           "
     module_header += ",\n           ".join(original_inputs) + ",\n           "
     module_header += ",\n           ".join(original_outputs) + ",\n           "
@@ -303,6 +329,7 @@ def merge(top_module, randomly_sampled_nodes, original_inputs, original_outputs)
     module_body    += "\n".join([
         "",
         "",
+        # Instantiating the obfuscation FSM
         "   obfuscation_fsm obfuscation_fsm_inst(",
         "                                        .clk(CK),",
         "                                        .reset(reset),",
@@ -311,9 +338,11 @@ def merge(top_module, randomly_sampled_nodes, original_inputs, original_outputs)
         "                                        .reset_orig_fsm(reset_orig_fsm));",
         "",
         "",
+        # Instantiating the original design. 'top_module' contains the module name of the original design.
         "   {0} {0}_inst (".format(top_module),
         "         " + ",\n         ".join([".{0}({0})".format(original_input) for original_input in sorted(original_inputs)]) + ",",
         "         .reset(reset_orig_fsm),",
+        # All the "_flipper" inputs for orignal design come from the 'op_vec' outputs from the obfuscation FSM.
         "         " + ",\n         ".join([".{}_flipper(op_vec[{}])".format(sample_node, i) for i,sample_node in enumerate(randomly_sampled_nodes)]) + ",",
 
         "         " + ",\n         ".join([".{0}({0})".format(original_output) for original_output in original_outputs]) + ");",
@@ -325,11 +354,13 @@ def merge(top_module, randomly_sampled_nodes, original_inputs, original_outputs)
 
     module = module_header + module_body + module_footer
 
-    
-    
+    # The generated verilog is written into a verilog file for further processing by
+    # other tools.
     with open("generated/top_module.v", "w") as f:
         f.write(module)
-    
+
+    # TODO: remove this
+    # Also return the verilog string.
     return module
 
     
